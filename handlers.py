@@ -9,7 +9,6 @@ from aiogram.types import FSInputFile, Message
 
 from config import ADMIN_ID, TELEGRAM_UPLOAD_LIMIT
 from downloader import download_video
-from user_logger import log_download
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -112,5 +111,4 @@ async def on_message(message: Message, bot: Bot) -> None:
             pass
 
     if ok:
-        log_download(user, url)
         await message.answer("✅ Готово! Чекаю наступне посилання 🎬")
