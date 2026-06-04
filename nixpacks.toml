@@ -1,3 +1,2 @@
-# Installs ffmpeg on Railway so admin can get best-quality merged video+audio
 [phases.setup]
-nixPkgs = ["ffmpeg"]
+nixPkgs = ["python311", "ffmpeg"]
