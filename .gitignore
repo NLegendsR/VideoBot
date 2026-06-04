@@ -1,0 +1,27 @@
+# Secrets — NEVER commit these
+.env
+
+# Logs
+users_log.txt
+*.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Temp video downloads
+tgbot_*/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store
