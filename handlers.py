@@ -1,3 +1,4 @@
+import io
 import logging
 import os
 import re
@@ -5,7 +6,7 @@ import re
 from aiogram import Bot, Router
 from aiogram.enums import ParseMode
 from aiogram.filters import CommandStart
-from aiogram.types import FSInputFile, Message
+from aiogram.types import BufferedInputFile, FSInputFile, Message
 
 from config import ADMIN_ID, TELEGRAM_UPLOAD_LIMIT
 from downloader import download_video
@@ -40,7 +41,7 @@ async def on_message(message: Message, bot: Bot) -> None:
     text     = (message.text or "").strip()
     is_admin = user.id == ADMIN_ID
 
-    # ── 1. Extract URL ────────────────────────────────────────────────────────
+    # ── 1. Extract URL ─────────────────────────────────────────────────────────
     url_match = URL_RE.search(text)
     if not url_match:
         await message.answer(
@@ -50,28 +51,25 @@ async def on_message(message: Message, bot: Bot) -> None:
 
     url = url_match.group(0)
 
-    # ── 2. Warn if platform looks unsupported ─────────────────────────────────
     if not KNOWN_DOMAINS.search(url):
         await message.answer(
             "⚠️ Схоже, ця платформа не підтримується — але я все одно спробую…"
         )
 
-    # ── 3. Status message ─────────────────────────────────────────────────────
     quality_tag = " (🔝 максимальна якість)" if is_admin else ""
     status = await message.answer(
         f"⏳ <b>Завантажую…</b>{quality_tag}",
         parse_mode=ParseMode.HTML,
     )
 
-    video_path: str | None = None
+    video_data = None  # BytesIO or str path
     ok = False
 
     try:
-        # ── 4. Download ───────────────────────────────────────────────────────
-        video_path, file_size = await download_video(url, is_admin=is_admin)
+        # ── 2. Download ────────────────────────────────────────────────────────
+        video_data, file_size = await download_video(url, is_admin=is_admin)
         size_mb = file_size / (1024 * 1024)
 
-        # ── 5. Telegram 50 MB upload hard limit ───────────────────────────────
         if file_size > TELEGRAM_UPLOAD_LIMIT:
             if is_admin:
                 raise ValueError(
@@ -85,9 +83,17 @@ async def on_message(message: Message, bot: Bot) -> None:
                 f"Файл {size_mb:.1f} МБ перевищує ліміт Telegram у 50 МБ."
             )
 
-        # ── 6. Send video ─────────────────────────────────────────────────────
+        # ── 3. Send video ──────────────────────────────────────────────────────
         await bot.send_chat_action(chat_id=message.chat.id, action="upload_video")
-        await message.answer_video(video=FSInputFile(video_path))
+
+        if isinstance(video_data, io.BytesIO):
+            # In-memory path — no disk file exists at this point
+            input_file = BufferedInputFile(video_data.read(), filename="video.mp4")
+        else:
+            # Admin on-disk path
+            input_file = FSInputFile(video_data)
+
+        await message.answer_video(video=input_file)
         ok = True
 
     except ValueError as exc:
@@ -95,11 +101,11 @@ async def on_message(message: Message, bot: Bot) -> None:
     except RuntimeError:
         await message.answer("❌ Несподівана помилка. Спробуй ще раз.")
     finally:
-        # ── Cleanup temp file ─────────────────────────────────────────────────
-        if video_path and os.path.exists(video_path):
+        # Clean up disk file (only for admin path)
+        if isinstance(video_data, str) and os.path.exists(video_data):
             try:
-                os.remove(video_path)
-                tmp_dir = os.path.dirname(video_path)
+                os.remove(video_data)
+                tmp_dir = os.path.dirname(video_data)
                 if os.path.isdir(tmp_dir) and not os.listdir(tmp_dir):
                     os.rmdir(tmp_dir)
             except OSError as e:
