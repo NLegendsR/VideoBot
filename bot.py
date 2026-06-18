@@ -9,12 +9,11 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 
-# Load .env file automatically when running locally
 try:
     from dotenv import load_dotenv
     load_dotenv()
 except ImportError:
-    pass  # python-dotenv not installed — env vars must be set manually
+    pass
 
 from config import BOT_TOKEN
 from handlers import router
@@ -38,9 +37,13 @@ async def main() -> None:
     dp  = Dispatcher(storage=MemoryStorage())
     dp.include_router(router)
 
+    # allowed_updates включает message для личных чатов И групп
     logger.info("Bot is starting…")
     try:
-        await dp.start_polling(bot, allowed_updates=["message"])
+        await dp.start_polling(
+            bot,
+            allowed_updates=["message"],
+        )
     finally:
         await bot.session.close()
         logger.info("Bot stopped.")

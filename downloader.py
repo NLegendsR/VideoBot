@@ -6,8 +6,6 @@ Strategy
 * Use yt-dlp's `--no-part` + in-memory buffer for small videos (≤ USER_MAX_DOWNLOAD).
 * For the admin path (large files) we still write to a tempfile because
   holding 100s of MB in RAM would cause OOM kills on cheap dynos.
-* We stream from the URL directly when the source supports direct links
-  (avoids double-downloading: server→disk→Telegram).
 """
 
 import asyncio
@@ -23,7 +21,6 @@ from config import ADMIN_MAX_DOWNLOAD, USER_MAX_DOWNLOAD
 
 logger = logging.getLogger(__name__)
 
-# Videos smaller than this go through the in-memory path.
 _MEM_THRESHOLD = USER_MAX_DOWNLOAD  # 50 MB
 
 
@@ -40,23 +37,27 @@ def _base_opts(*, noplaylist: bool = True) -> dict:
     }
 
 
-def _probe_size(url: str) -> int | None:
-    """Return expected file size in bytes, or None if unknown."""
-    opts = {**_base_opts(), "simulate": True, "skip_download": True}
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            return info.get("filesize") or info.get("filesize_approx")
-    except Exception:
-        return None
-
-
 class _MemoryLogger:
     """Suppress all yt-dlp console output (we use Python logging)."""
     def debug(self, msg):   pass
     def info(self, msg):    pass
     def warning(self, msg): logger.debug("yt-dlp warn: %s", msg)
     def error(self, msg):   logger.warning("yt-dlp err: %s", msg)
+
+
+def is_supported_url(url: str) -> bool:
+    """
+    Return True if yt-dlp has an extractor that claims to support this URL.
+    This is a fast, offline check — no network request is made.
+    """
+    try:
+        extractors = yt_dlp.extractor.gen_extractors()
+        for extractor in extractors:
+            if extractor.suitable(url) and extractor.IE_NAME != "generic":
+                return True
+        return False
+    except Exception:
+        return False
 
 
 # ── public API ────────────────────────────────────────────────────────────────
@@ -93,7 +94,6 @@ def _download_to_memory(url: str) -> tuple[io.BytesIO, int]:
     buf = io.BytesIO()
 
     def _progress_hook(d: dict):
-        # Abort early if the file will exceed our limit
         total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
         if total and total > _MEM_THRESHOLD:
             raise yt_dlp.utils.DownloadError(
@@ -108,16 +108,11 @@ def _download_to_memory(url: str) -> tuple[io.BytesIO, int]:
             "/best[ext=mp4]/best"
         ),
         "max_filesize": _MEM_THRESHOLD,
-        # Write directly into our BytesIO buffer
-        "outtmpl":      "-",           # stdout mode
         "logtostderr":  False,
         "logger":       _MemoryLogger(),
         "progress_hooks": [_progress_hook],
     }
 
-    # yt-dlp doesn't natively write to BytesIO, so we use a temp file that
-    # is deleted immediately after reading — this keeps disk usage near zero
-    # (the file exists only while we read it, a fraction of a second).
     tmp_dir = tempfile.mkdtemp(prefix="tgbot_")
     output_template = os.path.join(tmp_dir, "video.%(ext)s")
     opts["outtmpl"] = output_template
@@ -136,7 +131,6 @@ def _download_to_memory(url: str) -> tuple[io.BytesIO, int]:
                 f"перевищує ліміт {_MEM_THRESHOLD // (1024*1024)} МБ."
             )
 
-        # Read into memory then delete — disk is used only briefly
         with open(file_path, "rb") as fh:
             buf.write(fh.read())
         buf.seek(0)
@@ -161,7 +155,6 @@ def _download_to_memory(url: str) -> tuple[io.BytesIO, int]:
         logger.exception("Unexpected error downloading %s", url)
         raise RuntimeError(str(exc))
     finally:
-        # Always clean up temp dir
         _cleanup_dir(tmp_dir)
 
 

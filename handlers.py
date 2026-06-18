@@ -9,25 +9,19 @@ from aiogram.filters import CommandStart
 from aiogram.types import BufferedInputFile, FSInputFile, Message
 
 from config import ADMIN_ID, TELEGRAM_UPLOAD_LIMIT
-from downloader import download_video
+from downloader import download_video, is_supported_url
 
 logger = logging.getLogger(__name__)
 router = Router()
 
 URL_RE = re.compile(r"https?://\S+", re.I)
-KNOWN_DOMAINS = re.compile(
-    r"(tiktok\.com|vm\.tiktok\.com|youtube\.com/shorts|youtu\.be"
-    r"|instagram\.com|facebook\.com|fb\.watch)",
-    re.I,
-)
-SUPPORT_LIST = "TikTok · YouTube Shorts · Instagram Reels · Facebook"
 
 
 @router.message(CommandStart())
 async def cmd_start(message: Message) -> None:
     await message.answer(
         "👋 <b>Привіт!</b> Надішли мені посилання на відео — я його скачаю.\n\n"
-        f"Підтримується: {SUPPORT_LIST}",
+        "Підтримується: YouTube, TikTok, Instagram, Twitter/X, Facebook і ще тисячі сайтів.",
         parse_mode=ParseMode.HTML,
     )
 
@@ -35,26 +29,35 @@ async def cmd_start(message: Message) -> None:
 @router.message()
 async def on_message(message: Message, bot: Bot) -> None:
     user = message.from_user
-    if not user:
-        return
+    # В группах from_user может быть None только для анонимных админов —
+    # обрабатываем и такой случай корректно
+    user_id = user.id if user else None
 
-    text     = (message.text or "").strip()
-    is_admin = user.id == ADMIN_ID
+    text = (message.text or message.caption or "").strip()
+    is_admin = user_id == ADMIN_ID
 
     # ── 1. Extract URL ─────────────────────────────────────────────────────────
     url_match = URL_RE.search(text)
     if not url_match:
-        await message.answer(
-            f"🔗 Надішли посилання на відео!\n\nПідтримується: {SUPPORT_LIST}"
-        )
+        # В группах молчим — не отвечаем на любой текст без ссылки
+        if message.chat.type in ("group", "supergroup", "channel"):
+            return
+        await message.answer("🔗 Надішли посилання на відео!")
         return
 
     url = url_match.group(0)
 
-    if not KNOWN_DOMAINS.search(url):
+    # ── 2. Check yt-dlp support (offline, fast) ────────────────────────────────
+    if not is_supported_url(url):
+        # В группах просто игнорируем неподдерживаемые ссылки
+        if message.chat.type in ("group", "supergroup", "channel"):
+            return
+        # В личке сообщаем
         await message.answer(
-            "⚠️ Схоже, ця платформа не підтримується — але я все одно спробую…"
+            "⚠️ Ця платформа не підтримується.\n"
+            "Спробуй посилання з YouTube, TikTok, Instagram, Twitter/X, Facebook тощо."
         )
+        return
 
     quality_tag = " (🔝 максимальна якість)" if is_admin else ""
     status = await message.answer(
@@ -62,11 +65,11 @@ async def on_message(message: Message, bot: Bot) -> None:
         parse_mode=ParseMode.HTML,
     )
 
-    video_data = None  # BytesIO or str path
+    video_data = None
     ok = False
 
     try:
-        # ── 2. Download ────────────────────────────────────────────────────────
+        # ── 3. Download ────────────────────────────────────────────────────────
         video_data, file_size = await download_video(url, is_admin=is_admin)
         size_mb = file_size / (1024 * 1024)
 
@@ -83,14 +86,12 @@ async def on_message(message: Message, bot: Bot) -> None:
                 f"Файл {size_mb:.1f} МБ перевищує ліміт Telegram у 50 МБ."
             )
 
-        # ── 3. Send video ──────────────────────────────────────────────────────
+        # ── 4. Send video ──────────────────────────────────────────────────────
         await bot.send_chat_action(chat_id=message.chat.id, action="upload_video")
 
         if isinstance(video_data, io.BytesIO):
-            # In-memory path — no disk file exists at this point
             input_file = BufferedInputFile(video_data.read(), filename="video.mp4")
         else:
-            # Admin on-disk path
             input_file = FSInputFile(video_data)
 
         await message.answer_video(video=input_file)
@@ -117,4 +118,4 @@ async def on_message(message: Message, bot: Bot) -> None:
             pass
 
     if ok:
-        await message.answer("✅ Готово! Чекаю наступне посилання 🎬")
+        await message.answer("✅ Готово! 🎬")
